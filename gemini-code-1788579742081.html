@@ -1,0 +1,417 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Menú de Pedidos</title>
+  
+  <!-- CSS de Leaflet (Mapa) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <!-- Estilos Locales -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <header>
+    <h1 id="nombre-negocio">Rotisería & Pastas Caseras</h1>
+    <button class="btn-admin-toggle" onclick="solicitarAccesoAdmin()">⚙️ Acceso Administración</button>
+  </header>
+
+  <div id="panel-admin" class="admin-panel">
+    <h2>Ajustes Generales del Negocio</h2>
+    <div class="form-group">
+      <input type="text" id="input-negocio" placeholder="Nombre de tu negocio">
+      <input type="text" id="input-telefono" placeholder="WhatsApp (ej: 5491151401415)">
+      <button class="btn-guardar" onclick="guardarConfiguracion()">Guardar Cambios</button>
+    </div>
+
+    <hr style="border-color: #444; margin: 20px 0;">
+
+    <h2>Agregar Nuevo Producto</h2>
+    <div class="form-group">
+      <input type="text" id="prod-nombre" placeholder="Nombre (ej: Sorrentinos)">
+      <input type="text" id="prod-desc" placeholder="Descripción">
+      <input type="number" id="prod-precio" placeholder="Precio ($)">
+      <input type="file" id="prod-imagen" accept="image/*">
+      <button class="btn-guardar" onclick="agregarProducto()">Agregar al Menú</button>
+    </div>
+  </div>
+
+  <div id="contenedor-menu" class="grid-pizzas"></div>
+
+  <div class="carrito-container">
+    <h2>🛒 Tu Pedido</h2>
+    <div id="items-carrito">
+      <p style="color: #777;">El carrito está vacío.</p>
+    </div>
+    
+    <div class="total-seccion">
+      Total: $<span id="total-precio">0</span>
+    </div>
+
+    <div class="pago-seccion">
+      <label for="cliente-nombre"><b>Nombre Completo:</b></label>
+      <input type="text" id="cliente-nombre" placeholder="Ej: Juan Pérez">
+
+      <label for="cliente-telefono"><b>Teléfono de Contacto:</b></label>
+      <input type="tel" id="cliente-telefono" placeholder="Ej: 1122334455">
+
+      <label for="cliente-direccion"><b>Dirección de Entrega:</b></label>
+      <div class="input-buscar-container">
+        <input type="text" id="cliente-direccion" placeholder="Ej: Av. Siempreviva 742, Buenos Aires">
+        <button type="button" class="btn-buscar-dir" onclick="buscarDireccionGPS()">🔍 Buscar</button>
+      </div>
+
+      <label for="monto-pago"><b>¿Con cuánto abonas?</b></label>
+      <input type="number" id="monto-pago" placeholder="Ej: 5000" oninput="calcularVuelto()">
+      <div>Vuelto a recibir: <b>$<span id="monto-vuelto">0</span></b></div>
+
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-gps" onclick="obtenerUbicacionGPS()">📍 Usar Ubicación GPS Actual</button>
+        <div id="mapa-contenedor"></div>
+        <span id="estado-gps" style="font-size: 0.9rem; color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; padding: 8px; border-radius: 4px; display: none; margin-top: 8px; word-break: break-all;"></span>
+      </div>
+    </div>
+
+    <button type="button" class="btn-whatsapp" onclick="enviarPedidoWhatsApp()">Enviar Pedido por WhatsApp</button>
+  </div>
+
+  <!-- JS de Leaflet (Mapa) -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Módulos de Firebase -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getDatabase, ref, set, onValue, push, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAjCFzQKnf4te3AANC3GkpNugHEbOL5IeU",
+      authDomain: "mazd-2c3eb.firebaseapp.com",
+      databaseURL: "https://mazd-2c3eb-default-rtdb.firebaseio.com",
+      projectId: "mazd-2c3eb",
+      storageBucket: "mazd-2c3eb.firebasestorage.app",
+      messagingSenderId: "222366006322",
+      appId: "1:222366006322:web:51d95da32cb67cf063902b",
+      measurementId: "G-4MK07SZ42L"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    const CLAVE_ADMIN = "1234";
+    const NUMERO_PREDETERMINADO = "5491151401415";
+
+    let telefonoWhatsApp = NUMERO_PREDETERMINADO;
+    let nombreNegocio = "Rotisería & Pastas Caseras";
+    let carrito = [];
+    let totalAcumulado = 0;
+    let modoEdicion = false;
+    let enlaceGPS = "";
+    let map = null;
+    let marker = null;
+    let productos = {};
+
+    onValue(ref(db, 'configuracion'), (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        if (data.nombre) {
+          nombreNegocio = data.nombre;
+          document.getElementById('nombre-negocio').innerText = nombreNegocio;
+        }
+        if (data.telefono) {
+          telefonoWhatsApp = data.telefono;
+        }
+      }
+    });
+
+    onValue(ref(db, 'productos'), (snapshot) => {
+      productos = snapshot.val() || {};
+      window.renderizarProductos();
+    });
+
+    window.solicitarAccesoAdmin = function() {
+      if (modoEdicion) {
+        modoEdicion = false;
+        document.getElementById('panel-admin').style.display = 'none';
+        window.renderizarProductos();
+        return;
+      }
+
+      const clave = prompt("Ingresa la contraseña de administrador:");
+      if (clave === CLAVE_ADMIN) {
+        modoEdicion = true;
+        document.getElementById('panel-admin').style.display = 'block';
+        window.renderizarProductos();
+      } else if (clave !== null) {
+        alert("Contraseña incorrecta. Acceso denegado.");
+      }
+    };
+
+    window.guardarConfiguracion = function() {
+      const negocioInput = document.getElementById('input-negocio').value;
+      const telefonoInput = document.getElementById('input-telefono').value;
+
+      let configUpdate = {};
+      if (negocioInput) configUpdate.nombre = negocioInput;
+
+      if (telefonoInput) {
+        let telLimpio = telefonoInput.replace(/\D/g, '');
+        if (!telLimpio.startsWith('549')) {
+          telLimpio = '549' + telLimpio;
+        }
+        configUpdate.telefono = telLimpio;
+      }
+
+      set(ref(db, 'configuracion'), configUpdate)
+        .then(() => alert("Ajustes guardados con éxito en Firebase."))
+        .catch((e) => alert("Error al guardar: " + e.message));
+    };
+
+    window.agregarProducto = function() {
+      const nombre = document.getElementById('prod-nombre').value;
+      const desc = document.getElementById('prod-desc').value;
+      const precio = parseFloat(document.getElementById('prod-precio').value);
+      const imagenInput = document.getElementById('prod-imagen');
+
+      if (!nombre || isNaN(precio) || !imagenInput.files[0]) {
+        alert("Completa el nombre, precio y selecciona una imagen.");
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const nuevoProdRef = push(ref(db, 'productos'));
+        set(nuevoProdRef, {
+          nombre: nombre,
+          descripcion: desc,
+          precio: precio,
+          imagen: e.target.result
+        }).then(() => {
+          document.getElementById('prod-nombre').value = '';
+          document.getElementById('prod-desc').value = '';
+          document.getElementById('prod-precio').value = '';
+          document.getElementById('prod-imagen').value = '';
+        });
+      };
+      reader.readAsDataURL(imagenInput.files[0]);
+    };
+
+    window.eliminarProducto = function(id) {
+      if (confirm(`¿Eliminar este producto del menú?`)) {
+        remove(ref(db, `productos/${id}`));
+      }
+    };
+
+    window.renderizarProductos = function() {
+      const contenedor = document.getElementById('contenedor-menu');
+      contenedor.innerHTML = '';
+
+      Object.keys(productos).forEach((id) => {
+        const prod = productos[id];
+        const btnEliminarHTML = modoEdicion 
+          ? `<button class="btn-eliminar" style="display:block" onclick="window.eliminarProducto('${id}')">✕</button>` 
+          : '';
+
+        const tarjeta = `
+          <div class="tarjeta-pizza">
+            ${btnEliminarHTML}
+            <div>
+              <img src="${prod.imagen}" alt="${prod.nombre}">
+              <h3>${prod.nombre}</h3>
+              <p>${prod.descripcion}</p>
+            </div>
+            <div>
+              <div class="precio">$${prod.precio}</div>
+              <button class="btn-agregar-carrito" onclick="window.agregarAlCarrito('${prod.nombre}', ${prod.precio})">Agregar al Carrito</button>
+            </div>
+          </div>
+        `;
+        contenedor.innerHTML += tarjeta;
+      });
+    };
+
+    window.agregarAlCarrito = function(nombre, precio) {
+      carrito.push({ nombre, precio });
+      window.actualizarCarrito();
+    };
+
+    window.eliminarDelCarrito = function(index) {
+      carrito.splice(index, 1);
+      window.actualizarCarrito();
+    };
+
+    window.actualizarCarrito = function() {
+      const contenedorItems = document.getElementById('items-carrito');
+      contenedorItems.innerHTML = '';
+      totalAcumulado = 0;
+
+      if (carrito.length === 0) {
+        contenedorItems.innerHTML = '<p style="color: #777;">El carrito está vacío.</p>';
+      } else {
+        carrito.forEach((item, index) => {
+          totalAcumulado += item.precio;
+          contenedorItems.innerHTML += `
+            <div class="item-carrito">
+              <span>${item.nombre} - $${item.precio}</span>
+              <button onclick="window.eliminarDelCarrito(${index})" style="background:none; border:none; color:red; cursor:pointer;">Eliminar</button>
+            </div>
+          `;
+        });
+      }
+
+      document.getElementById('total-precio').innerText = totalAcumulado;
+      window.calcularVuelto();
+    };
+
+    window.calcularVuelto = function() {
+      const pago = parseFloat(document.getElementById('monto-pago').value) || 0;
+      const vuelto = pago - totalAcumulado;
+      document.getElementById('monto-vuelto').innerText = vuelto > 0 ? vuelto : 0;
+    };
+
+    function inicializarMapa(lat, lon, texto) {
+      const mapaDiv = document.getElementById('mapa-contenedor');
+      mapaDiv.style.display = 'block';
+
+      if (!map) {
+        map = L.map('mapa-contenedor').setView([lat, lon], 16);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap'
+        }).addTo(map);
+      } else {
+        map.setView([lat, lon], 16);
+      }
+
+      if (marker) map.removeLayer(marker);
+      marker = L.marker([lat, lon]).addTo(map).bindPopup(texto).openPopup();
+      map.invalidateSize();
+    }
+
+    window.buscarDireccionGPS = async function() {
+      const direccion = document.getElementById('cliente-direccion').value.trim();
+      const estado = document.getElementById('estado-gps');
+
+      if (!direccion) {
+        alert('Por favor, ingresá una dirección para buscar.');
+        return;
+      }
+
+      estado.style.display = 'block';
+      estado.style.backgroundColor = '#fff3cd';
+      estado.style.color = '#856404';
+      estado.style.borderColor = '#ffeeba';
+      estado.innerText = "Buscando dirección en el mapa...";
+
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(direccion)}`;
+
+      try {
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (data.length > 0) {
+          const lat = data[0].lat;
+          const lon = data[0].lon;
+          enlaceGPS = `https://maps.google.com/?q=${lat},${lon}`;
+
+          inicializarMapa(lat, lon, `<b>Ubicación:</b><br>${data[0].display_name}`);
+
+          estado.style.backgroundColor = '#d4edda';
+          estado.style.color = '#155724';
+          estado.style.borderColor = '#c3e6cb';
+          estado.innerHTML = `<b>Dirección Encontrada:</b><br>${data[0].display_name}<br><a href="${enlaceGPS}" target="_blank" style="color: #155724;">Ver en Google Maps</a>`;
+        } else {
+          estado.style.backgroundColor = '#f8d7da';
+          estado.style.color = '#721c24';
+          estado.style.borderColor = '#f5c6cb';
+          estado.innerText = "No se encontró la dirección. Intenta agregar ciudad o localidad.";
+        }
+      } catch (error) {
+        console.error('Error al buscar la dirección:', error);
+        estado.style.backgroundColor = '#f8d7da';
+        estado.style.color = '#721c24';
+        estado.style.borderColor = '#f5c6cb';
+        estado.innerText = "Error al conectar con el servicio de mapas.";
+      }
+    };
+
+    window.obtenerUbicacionGPS = function() {
+      const estado = document.getElementById('estado-gps');
+      estado.style.display = 'block';
+      
+      if (navigator.geolocation) {
+        estado.style.backgroundColor = '#fff3cd';
+        estado.style.color = '#856404';
+        estado.style.borderColor = '#ffeeba';
+        estado.innerText = "Obteniendo coordenadas GPS...";
+
+        navigator.geolocation.getCurrentPosition(
+          (posicion) => {
+            const lat = posicion.coords.latitude;
+            const lon = posicion.coords.longitude;
+            enlaceGPS = `https://maps.google.com/?q=${lat},${lon}`;
+            
+            inicializarMapa(lat, lon, "Tu ubicación actual");
+
+            estado.style.backgroundColor = '#d4edda';
+            estado.style.color = '#155724';
+            estado.style.borderColor = '#c3e6cb';
+            estado.innerHTML = `<b>Ubicación obtenida por GPS:</b><br>Lat: ${lat}, Lon: ${lon}<br><a href="${enlaceGPS}" target="_blank" style="color: #155724;">Ver en Google Maps</a>`;
+          },
+          (error) => {
+            estado.style.backgroundColor = '#f8d7da';
+            estado.style.color = '#721c24';
+            estado.style.borderColor = '#f5c6cb';
+            estado.innerText = "No se pudo obtener la ubicación GPS. Verifica los permisos de tu navegador.";
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 10000
+          }
+        );
+      } else {
+        estado.style.backgroundColor = '#f8d7da';
+        estado.style.color = '#721c24';
+        estado.style.borderColor = '#f5c6cb';
+        estado.innerText = "Tu navegador no soporta geolocalización.";
+      }
+    };
+
+    window.enviarPedidoWhatsApp = function() {
+      if (carrito.length === 0) {
+        alert("El carrito está vacío. Agrega al menos un producto.");
+        return;
+      }
+
+      const clienteNombre = document.getElementById('cliente-nombre').value.trim();
+      const clienteTelefono = document.getElementById('cliente-telefono').value.trim();
+      const clienteDireccion = document.getElementById('cliente-direccion').value.trim();
+
+      if (!clienteNombre || !clienteDireccion) {
+        alert("Por favor ingresa tu Nombre y Dirección antes de enviar el pedido.");
+        return;
+      }
+
+      let detalle = carrito.map(i => `- ${i.nombre}: $${i.precio}`).join('\n');
+      const pago = parseFloat(document.getElementById('monto-pago').value) || 0;
+      const vuelto = pago - totalAcumulado > 0 ? pago - totalAcumulado : 0;
+
+      let mensaje = `*Nuevo Pedido para ${nombreNegocio}*\n\n`;
+      mensaje += `*Nombre:* ${clienteNombre}\n`;
+      if (clienteTelefono) mensaje += `*Teléfono:* ${clienteTelefono}\n`;
+      mensaje += `*Dirección:* ${clienteDireccion}\n`;
+      if (enlaceGPS) mensaje += `*Ubicación GPS Exacta:* ${enlaceGPS}\n`;
+
+      mensaje += `\n*Detalle del Pedido:*\n${detalle}\n\n*Total:* $${totalAcumulado}`;
+      if (pago > 0) {
+        mensaje += `\n*Paga con:* $${pago}\n*Vuelto:* $${vuelto}`;
+      }
+
+      const urlWA = `https://api.whatsapp.com/send?phone=${telefonoWhatsApp}&text=${encodeURIComponent(mensaje)}`;
+      window.location.href = urlWA;
+    };
+  </script>
+
+</body>
+</html>
