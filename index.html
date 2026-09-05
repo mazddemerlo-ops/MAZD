@@ -287,6 +287,7 @@
       <input type="text" id="prod-nombre" placeholder="Nombre (ej: Sorrentinos)">
       <input type="text" id="prod-desc" placeholder="Descripción">
       <input type="number" id="prod-precio" placeholder="Precio ($)">
+      <input type="text" id="prod-url-archivo" placeholder="O nombre de archivo subido (ej: fideos.jpg)">
       <input type="file" id="prod-imagen" accept="image/*">
       <button class="btn-guardar" onclick="agregarProducto()">Agregar al Menú</button>
     </div>
@@ -418,37 +419,83 @@
       }
 
       set(ref(db, 'configuracion'), configUpdate)
-        .then(() => alert("Ajustes guardados con éxito en Firebase."))
+        .then(() => alert("Ajustes guardados con éxito."))
         .catch((e) => alert("Error al guardar: " + e.message));
     };
 
+    function comprimirImagen(file, callback) {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const img = new Image();
+        img.onload = function() {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          const maxDim = 600;
+
+          if (width > height) {
+            if (width > maxDim) {
+              height *= maxDim / width;
+              width = maxDim;
+            }
+          } else {
+            if (height > maxDim) {
+              width *= maxDim / height;
+              height = maxDim;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          callback(canvas.toDataURL('image/jpeg', 0.7));
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
     window.agregarProducto = function() {
-      const nombre = document.getElementById('prod-nombre').value;
-      const desc = document.getElementById('prod-desc').value;
+      const nombre = document.getElementById('prod-nombre').value.trim();
+      const desc = document.getElementById('prod-desc').value.trim();
       const precio = parseFloat(document.getElementById('prod-precio').value);
+      const urlArchivo = document.getElementById('prod-url-archivo').value.trim();
       const imagenInput = document.getElementById('prod-imagen');
 
-      if (!nombre || isNaN(precio) || !imagenInput.files[0]) {
-        alert("Completa el nombre, precio y selecciona una imagen.");
+      if (!nombre || isNaN(precio)) {
+        alert("Ingresá el nombre y precio del producto.");
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = function(e) {
+      const guardarEnFirebase = (imagenFinal) => {
         const nuevoProdRef = push(ref(db, 'productos'));
         set(nuevoProdRef, {
           nombre: nombre,
           descripcion: desc,
           precio: precio,
-          imagen: e.target.result
+          imagen: imagenFinal
         }).then(() => {
           document.getElementById('prod-nombre').value = '';
           document.getElementById('prod-desc').value = '';
           document.getElementById('prod-precio').value = '';
+          document.getElementById('prod-url-archivo').value = '';
           document.getElementById('prod-imagen').value = '';
+          alert("Producto agregado con éxito.");
+        }).catch((err) => {
+          alert("Error de guardado: " + err.message);
         });
       };
-      reader.readAsDataURL(imagenInput.files[0]);
+
+      if (urlArchivo !== "") {
+        guardarEnFirebase(encodeURI(urlArchivo));
+      } else if (imagenInput.files && imagenInput.files[0]) {
+        comprimirImagen(imagenInput.files[0], (dataBase64) => {
+          guardarEnFirebase(dataBase64);
+        });
+      } else {
+        alert("Selecciona un archivo o escribe el nombre del archivo subido a GitHub (ej: fideos.jpg).");
+      }
     };
 
     window.eliminarProducto = function(id) {
@@ -471,9 +518,9 @@
           <div class="tarjeta-pizza">
             ${btnEliminarHTML}
             <div>
-              <img src="${prod.imagen}" alt="${prod.nombre}">
+              <img src="${prod.imagen}" alt="${prod.nombre}" onerror="this.src='https://via.placeholder.com/280x180?text=Sin+Imagen'">
               <h3>${prod.nombre}</h3>
-              <p>${prod.descripcion}</p>
+              <p>${prod.descripcion || ''}</p>
             </div>
             <div>
               <div class="precio">$${prod.precio}</div>
